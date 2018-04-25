@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	//	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -26,6 +25,7 @@ type DSentry struct {
 
 func main() {
 	if len(os.Args) < 3 {
+		usage()
 		return
 	}
 	remote := NewRemote(os.Args[2])
@@ -37,6 +37,25 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command %s", os.Args[1])
 	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, `USAGE:
+	f3cp dump <remote fedora> <pid1> [<pid2> ...]
+
+Dump a JSON representation of the pids given to STDOUT. This will include
+all current datastream contents.
+
+	f3cp load <remote fedora>
+
+Copy the JSON provided on STDIN into the given fedora, possibly overwriting
+any existing objects.
+
+You should include a username and password if your instance of fedora requires
+it. e.g. https://username:password@host/fedora
+
+The dump and load only keep one object in memory at a time.
+`)
 }
 
 // DumpList dumps a list of ids from the given fedora instance to out as
