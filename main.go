@@ -28,12 +28,12 @@ func main() {
 	if len(os.Args) < 3 {
 		return
 	}
-	rf := NewRemote(os.Args[2])
+	remote := NewRemote(os.Args[2])
 	switch os.Args[1] {
 	case "dump":
-		DumpList(rf, os.Stdout, os.Args[3:])
+		DumpList(remote, os.Stdout, os.Args[3:])
 	case "load":
-		LoadList(rf, os.Stdin)
+		LoadList(remote, os.Stdin)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command %s", os.Args[1])
 	}
@@ -44,8 +44,10 @@ func main() {
 // in the id array. Only one object is kept in memory at a time, so this
 // can handle a long list of objects. Status updates and errors are printed to
 // STDERR.
-func DumpList(rf *remoteFedora, out io.Writer, ids []string) error {
+func DumpList(remote *remoteFedora, out io.Writer, ids []string) {
 	enc := json.NewEncoder(out)
+	// we manually format the enclosing list part of the JSON. Each object in
+	// the list is serialized using the encoder.
 	fmt.Fprintf(out, "[")
 	first := true
 	for _, id := range ids {
@@ -54,7 +56,7 @@ func DumpList(rf *remoteFedora, out io.Writer, ids []string) error {
 		}
 		first = false
 		fmt.Fprintln(os.Stderr, "dumping", id)
-		obj, err := FetchOneObject(rf, id)
+		obj, err := FetchOneObject(remote, id)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, id, err)
 			continue
@@ -62,20 +64,19 @@ func DumpList(rf *remoteFedora, out io.Writer, ids []string) error {
 		enc.Encode(obj)
 	}
 	fmt.Fprintf(out, "]")
-	return nil
 }
 
-// FetchOneObject loads every datastream from the fedora object id from rf and
-// returns it as an FObject. It loads all of the datastreams in memory, so
+// FetchOneObject loads every datastream from the fedora object id from remote
+// and returns it as an FObject. It loads all of the datastreams in memory, so
 // there is a potential for extremely large objects to run out of memory.
-func FetchOneObject(rf *remoteFedora, id string) (*FObject, error) {
-	obj, err := rf.GetObjectInfo(id)
+func FetchOneObject(remote *remoteFedora, id string) (*FObject, error) {
+	var err error
+	result := FObject{}
+	result.ObjectInfo, err = remote.GetObjectInfo(id)
 	if err != nil {
 		return nil, err
 	}
-
-	result := FObject{ObjectInfo: obj}
-	dsNames, err := rf.GetDatastreamList(id)
+	dsNames, err := remote.GetDatastreamList(id)
 	if err != nil {
 		return nil, err
 	}
@@ -83,20 +84,20 @@ func FetchOneObject(rf *remoteFedora, id string) (*FObject, error) {
 	sort.StringSlice(dsNames).Sort()
 	for _, ds := range dsNames {
 		var entry DSentry
-		entry.DsInfo, err = rf.GetDatastreamInfo(id, ds)
+		entry.DsInfo, err = remote.GetDatastreamInfo(id, ds)
 		if err != nil {
 			return nil, err
 		}
 		if entry.Size > 0 {
-			body, err := rf.GetDatastream(id, ds)
+			body, err := remote.GetDatastream(id, ds)
 			if err != nil {
 				return nil, err
 			}
 			entry.ContentBase64, err = ioutil.ReadAll(body)
+			body.Close()
 			if err != nil {
 				return nil, err
 			}
-			body.Close()
 			if utf8.Valid(entry.ContentBase64) {
 				entry.Content = string(entry.ContentBase64)
 				entry.ContentBase64 = nil
@@ -107,7 +108,7 @@ func FetchOneObject(rf *remoteFedora, id string) (*FObject, error) {
 	return &result, nil
 }
 
-func LoadList(rf *remoteFedora, source io.Reader) error {
+func LoadList(remote *remoteFedora, source io.Reader) error {
 	// read objects from json list one at a time
 	dec := json.NewDecoder(source)
 
@@ -128,7 +129,7 @@ func LoadList(rf *remoteFedora, source io.Reader) error {
 		}
 
 		fmt.Fprintln(os.Stderr, "loading", obj.PID)
-		err = UploadOneObject(rf, obj)
+		err = UploadOneObject(remote, obj)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return err
@@ -140,11 +141,11 @@ func LoadList(rf *remoteFedora, source io.Reader) error {
 	return err
 }
 
-func UploadOneObject(rf *remoteFedora, obj FObject) error {
+func UploadOneObject(remote *remoteFedora, obj FObject) error {
 	// does object exist?
-	_, err := rf.GetObjectInfo(obj.PID)
+	_, err := remote.GetObjectInfo(obj.PID)
 	if err == ErrNotFound {
-		err = rf.MakeObject(obj.ObjectInfo)
+		err = remote.MakeObject(obj.ObjectInfo)
 	}
 	if err != nil {
 		return err
@@ -157,17 +158,18 @@ func UploadOneObject(rf *remoteFedora, obj FObject) error {
 		}
 		// choose the correct source for this datastream content
 		// n.b. it is possible that source will remain nil
+		// that means there is no content to upload.
 		var source io.Reader
 		if ds.Content != "" {
 			source = strings.NewReader(ds.Content)
 		} else if len(ds.ContentBase64) > 0 {
 			source = bytes.NewReader(ds.ContentBase64)
 		}
-		_, err = rf.GetDatastreamInfo(obj.PID, ds.Name)
+		_, err = remote.GetDatastreamInfo(obj.PID, ds.Name)
 		if err == ErrNotFound {
-			err = rf.MakeDatastream(obj.PID, ds.DsInfo, source)
+			err = remote.MakeDatastream(obj.PID, ds.DsInfo, source)
 		} else if err == nil {
-			err = rf.UpdateDatastream(obj.PID, ds.DsInfo, source)
+			err = remote.UpdateDatastream(obj.PID, ds.DsInfo, source)
 		}
 		if err != nil {
 			return err

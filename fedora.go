@@ -1,5 +1,4 @@
 // Package fedora provides a thin wrapper around the Fedora REST API.
-// It is not complete.
 package main
 
 import (
