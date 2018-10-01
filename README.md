@@ -7,11 +7,20 @@ It will upload a list of objects described in a JSON file (in a suitable format)
 
 (Why not use the Fedora 3 import/export interface? Don't ask questions!)
 
+# Installation
+1. [Install](https://golang.org/doc/install) Go
+2. Use go get command to install f3cp utility
+```console
+go get github.com/ndlib/f3cp
+```
 # Usage
 
 To copy a few objects into a JSON file:
 
     f3cp dump https://user:pass@host/fedora  temp:123 temp:124 temp:125 > out.json
+
+To copy many objects, create a file with list of objects (one per line)
+    cat my-pids | xargs f3cp dump https://user:pass@host/fedora > out.json
 
 To copy the items from a JSON file into fedora:
 
