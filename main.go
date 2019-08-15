@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/knakk/rdf"
 )
 
 type FObject struct {
@@ -34,6 +37,8 @@ func main() {
 		DumpList(remote, os.Stdout, os.Args[3:])
 	case "load":
 		LoadList(remote, os.Stdin)
+	case "item":
+		FetchOneCurateObject(remote, os.Args[3])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command %s", os.Args[1])
 	}
@@ -194,5 +199,291 @@ func UploadOneObject(remote *remoteFedora, obj FObject) error {
 			return err
 		}
 	}
+	return nil
+}
+
+type Triples struct {
+	Subject   string
+	Predicate string
+	Object    string
+}
+
+type CurateItem struct {
+	PID  string
+	Meta []Triples
+}
+
+func (c *CurateItem) Add(predicate string, value string) {
+	if value == "" {
+		return
+	}
+	c.Meta = append(c.Meta, Triples{
+		Subject:   c.PID,
+		Predicate: predicate,
+		Object:    value,
+	})
+}
+
+func (c *CurateItem) Add3(subject string, predicate string, value string) {
+	if value == "" {
+		return
+	}
+	c.Meta = append(c.Meta, Triples{
+		Subject:   subject,
+		Predicate: predicate,
+		Object:    value,
+	})
+}
+
+// FetchOneCurateObject loads the given fedora object and interpretes it as if
+// it were a curate object. This means only certain datastreams are downloaded.
+func FetchOneCurateObject(remote *remoteFedora, id string) (*CurateItem, error) {
+	var err error
+	result := &CurateItem{PID: id}
+	// Assume the id is a curate object, which means we know exactly which
+	// datastreams to look at
+	//result.ObjectInfo, err = remote.GetObjectInfo(id)
+
+	//https://godoc.org/github.com/knakk/rdf
+
+	err = ReadRelsExt(remote, id, result)
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = ReadProperties(remote, id, result)
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = ReadRightsMetadata(remote, id, result)
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = ReadDescMetadata(remote, id, result)
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = ReadContent(remote, id, result)
+	// only GenericFiles have content and thumbnail datastreams
+	if err != nil && err != ErrNotFound {
+		fmt.Println(err)
+	}
+	err = ReadThumbnail(remote, id, result)
+	if err != nil && err != ErrNotFound {
+		fmt.Println(err)
+	}
+	//dsNames, err := remote.GetDatastreamList(id)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//// load the datastreams in alphabetical order
+	//sort.StringSlice(dsNames).Sort()
+	//for _, ds := range dsNames {
+	//	var entry DSentry
+	//	entry.DsInfo, err = remote.GetDatastreamInfo(id, ds)
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//	if entry.Size > 0 {
+	//		body, err := remote.GetDatastream(id, ds)
+	//		if err != nil {
+	//			return nil, err
+	//		}
+	//		entry.ContentBase64, err = ioutil.ReadAll(body)
+	//		body.Close()
+	//		if err != nil {
+	//			return nil, err
+	//		}
+	//		if utf8.Valid(entry.ContentBase64) {
+	//			entry.Content = string(entry.ContentBase64)
+	//			entry.ContentBase64 = nil
+	//		}
+	//	}
+	//	result.DSitems = append(result.DSitems, entry)
+	//}
+	//return &result, nil
+	for _, t := range result.Meta {
+		fmt.Printf("%s\t%s\t%s\n", t.Subject, t.Predicate, t.Object)
+	}
+	return result, nil
+}
+
+func ReadRelsExt(remote *remoteFedora, id string, result *CurateItem) error {
+	body, err := remote.GetDatastream(id, "RELS-EXT")
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+	triples := rdf.NewTripleDecoder(body, rdf.RDFXML)
+	for {
+		v, err := triples.Decode()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		subject := ApplyPrefixes(v.Subj.String())
+		if subject != id {
+			subject = id + "/" + subject
+		}
+		result.Add3(subject,
+			ApplyPrefixes(v.Pred.String()),
+			ApplyPrefixes(v.Obj.String()))
+	}
+
+	return nil
+}
+
+var Prefixes = map[string]string{
+	"info:fedora/und:":                                       "und:",
+	"http://purl.org/dc/terms/":                              "dc:",
+	"https://library.nd.edu/ns/terms/":                       "nd:",
+	"http://purl.org/ontology/bibo/":                         "bibo:",
+	"http://www.ndltd.org/standards/metadata/etdms/1.1/":     "ms:",
+	"http://purl.org/vra/":                                   "vracore:",
+	"http://id.loc.gov/vocabulary/relators/":                 "mrel:",
+	"http://www.ebu.ch/metadata/ontologies/ebucore/ebucore#": "ebucore:",
+	"http://xmlns.com/foaf/0.1/":                             "foaf:",
+	"http://projecthydra.org/ns/relations#":                  "hydra:",
+	"http://www.w3.org/2000/01/rdf-schema#":                  "rdfs:",
+	"http://purl.org/pav/":                                   "pav:",
+}
+
+func ApplyPrefixes(s string) string {
+	for k, v := range Prefixes {
+		if strings.HasPrefix(s, k) {
+			return v + strings.TrimPrefix(s, k)
+		}
+	}
+	return s
+}
+
+func ReadDescMetadata(remote *remoteFedora, id string, result *CurateItem) error {
+	body, err := remote.GetDatastream(id, "descMetadata")
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+	triples := rdf.NewTripleDecoder(body, rdf.NTriples)
+	for {
+		v, err := triples.Decode()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		subject := ApplyPrefixes(v.Subj.String())
+		if subject != id {
+			subject = id + "/" + subject
+		}
+		result.Add3(subject,
+			ApplyPrefixes(v.Pred.String()),
+			ApplyPrefixes(v.Obj.String()))
+	}
+
+	return nil
+}
+
+type Access struct {
+	Type    string   `xml:"type,attr"`
+	Persons []string `xml:"machine>person"`
+	Groups  []string `xml:"machine>group"`
+}
+type rightsDS struct {
+	Access  []Access `xml:"access"`
+	Embargo string   `xml:"embargo>machine"`
+}
+
+func ReadRightsMetadata(remote *remoteFedora, id string, result *CurateItem) error {
+	body, err := remote.GetDatastream(id, "rightsMetadata")
+	if err != nil {
+		return err
+	}
+	var v rightsDS
+	dec := xml.NewDecoder(body)
+	err = dec.Decode(&v)
+	body.Close()
+	if err != nil {
+		return err
+	}
+
+	result.Add("embargo-date", v.Embargo)
+	for _, access := range v.Access {
+		var grouplabel string
+		var personlabel string
+		switch access.Type {
+		default:
+			// only care about read and edit permission levels
+			continue
+		case "read":
+			grouplabel = "read-group"
+			personlabel = "read-person"
+		case "edit":
+			grouplabel = "edit-group"
+			personlabel = "edit-person"
+		}
+		for _, g := range access.Groups {
+			result.Add(grouplabel, g)
+		}
+		for _, p := range access.Persons {
+			result.Add(personlabel, p)
+		}
+	}
+
+	return nil
+}
+
+type propertiesDS struct {
+	Depositor      string `xml:"depositor"`
+	Owner          string `xml:"owner"`
+	Representative string `xml:"representative"`
+}
+
+func ReadProperties(remote *remoteFedora, id string, result *CurateItem) error {
+	body, err := remote.GetDatastream(id, "properties")
+	if err != nil {
+		return err
+	}
+	var props propertiesDS
+	dec := xml.NewDecoder(body)
+	err = dec.Decode(&props)
+	body.Close()
+	if err != nil {
+		return err
+	}
+
+	result.Add("depositor", props.Depositor)
+	result.Add("owner", props.Owner)
+	result.Add("representative", props.Representative)
+
+	return nil
+}
+
+func ReadContent(remote *remoteFedora, id string, result *CurateItem) error {
+	info, err := remote.GetDatastreamInfo(id, "content")
+	if err != nil {
+		return err
+	}
+
+	result.Add("filename", info.Label)
+	result.Add("checksum-md5", info.Checksum)
+	result.Add("mime-type", info.MIMEType)
+	//result.Add("file-size", info.Size) // convert to string
+	result.Add("file-location", info.Location)
+
+	return nil
+}
+
+func ReadThumbnail(remote *remoteFedora, id string, result *CurateItem) error {
+	info, err := remote.GetDatastreamInfo(id, "thumbnail")
+	if err != nil {
+		return err
+	}
+
+	result.Add("thumbnail", info.Location)
+
 	return nil
 }
