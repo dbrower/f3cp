@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -38,7 +39,7 @@ func main() {
 	case "load":
 		LoadList(remote, os.Stdin)
 	case "item":
-		FetchOneCurateObject(remote, os.Args[3])
+		DownloadCurateObjects(remote, os.Args[3:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command %s", os.Args[1])
 	}
@@ -242,69 +243,76 @@ func FetchOneCurateObject(remote *remoteFedora, id string) (*CurateItem, error) 
 	result := &CurateItem{PID: id}
 	// Assume the id is a curate object, which means we know exactly which
 	// datastreams to look at
-	//result.ObjectInfo, err = remote.GetObjectInfo(id)
-
-	//https://godoc.org/github.com/knakk/rdf
-
 	err = ReadRelsExt(remote, id, result)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, id, err)
 	}
 	err = ReadProperties(remote, id, result)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, id, err)
 	}
 	err = ReadRightsMetadata(remote, id, result)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, id, err)
 	}
 	err = ReadDescMetadata(remote, id, result)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, id, err)
 	}
 	err = ReadContent(remote, id, result)
 	// only GenericFiles have content and thumbnail datastreams
 	if err != nil && err != ErrNotFound {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, id, err)
 	}
 	err = ReadThumbnail(remote, id, result)
 	if err != nil && err != ErrNotFound {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, id, err)
 	}
-	//dsNames, err := remote.GetDatastreamList(id)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//// load the datastreams in alphabetical order
-	//sort.StringSlice(dsNames).Sort()
-	//for _, ds := range dsNames {
-	//	var entry DSentry
-	//	entry.DsInfo, err = remote.GetDatastreamInfo(id, ds)
-	//	if err != nil {
-	//		return nil, err
-	//	}
-	//	if entry.Size > 0 {
-	//		body, err := remote.GetDatastream(id, ds)
-	//		if err != nil {
-	//			return nil, err
-	//		}
-	//		entry.ContentBase64, err = ioutil.ReadAll(body)
-	//		body.Close()
-	//		if err != nil {
-	//			return nil, err
-	//		}
-	//		if utf8.Valid(entry.ContentBase64) {
-	//			entry.Content = string(entry.ContentBase64)
-	//			entry.ContentBase64 = nil
-	//		}
-	//	}
-	//	result.DSitems = append(result.DSitems, entry)
-	//}
-	//return &result, nil
-	for _, t := range result.Meta {
-		fmt.Printf("%s\t%s\t%s\n", t.Subject, t.Predicate, t.Object)
+	err = ReadBendoItem(remote, id, result)
+	if err != nil && err != ErrNotFound {
+		fmt.Fprintln(os.Stderr, id, err)
 	}
 	return result, nil
+}
+
+func DownloadCurateObjects(remote *remoteFedora, ids []string) error {
+	w := csv.NewWriter(os.Stdout)
+	w.Comma = '\t'
+
+	for _, id := range ids {
+		fmt.Fprintln(os.Stderr, "Fetching", id)
+		v, err := FetchOneCurateObject(remote, id)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, id, err)
+		}
+
+		for _, t := range v.Meta {
+			line := []string{t.Subject,
+				t.Predicate,
+				strings.ReplaceAll(t.Object, "\n", "\\n"),
+			}
+			err = w.Write(line)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, id, err)
+			}
+		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	return nil
+}
+
+type PredicatePair struct {
+	XMLName xml.Name
+	V       string `xml:",any,attr"`
+}
+type RelsExtDS struct {
+	Description struct {
+		P []PredicatePair `xml:",any"`
+	} `xml:"Description"`
 }
 
 func ReadRelsExt(remote *remoteFedora, id string, result *CurateItem) error {
@@ -313,23 +321,36 @@ func ReadRelsExt(remote *remoteFedora, id string, result *CurateItem) error {
 		return err
 	}
 	defer body.Close()
-	triples := rdf.NewTripleDecoder(body, rdf.RDFXML)
-	for {
-		v, err := triples.Decode()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
+	// using the rdf decoder with rdf.RDFXML caused problems since the decoder
+	// thought the `info:` scheme used by fedora was an undeclared namespace.
+	// so we decode it ourself. The XML/RDF used by fedora in RELS-EXT is
+	// very limited and structured, so this is not expected to be a problem.
+	// (e.g. every tuple must have the given resource as a subject).
+	var v RelsExtDS
+	dec := xml.NewDecoder(body)
+	err = dec.Decode(&v)
+	body.Close()
 
-		subject := ApplyPrefixes(v.Subj.String())
-		if subject != id {
-			subject = id + "/" + subject
+	for _, p := range v.Description.P {
+		// this isn't taking namespace into account...
+		p.V = ApplyPrefixes(p.V)
+		switch p.XMLName.Local {
+		case "hasModel":
+			result.Add("af-model", p.V)
+		case "isMemberOfCollection":
+			result.Add("isMemberOfCollection", p.V)
+		case "isPartOf":
+			result.Add("isPartOf", p.V)
+
+		// make sure the permission labels match those used in rightsMetadata
+		case "hasEditor":
+			result.Add("edit-person", p.V)
+		case "hasEditorGroup":
+			result.Add("edit-group", p.V)
+
+		default:
+			result.Add(ApplyPrefixes(p.XMLName.Space+p.XMLName.Local), p.V)
 		}
-		result.Add3(subject,
-			ApplyPrefixes(v.Pred.String()),
-			ApplyPrefixes(v.Obj.String()))
 	}
 
 	return nil
@@ -337,6 +358,7 @@ func ReadRelsExt(remote *remoteFedora, id string, result *CurateItem) error {
 
 var Prefixes = map[string]string{
 	"info:fedora/und:":                                       "und:",
+	"info:fedora/afmodel:":                                   "",
 	"http://purl.org/dc/terms/":                              "dc:",
 	"https://library.nd.edu/ns/terms/":                       "nd:",
 	"http://purl.org/ontology/bibo/":                         "bibo:",
@@ -484,6 +506,22 @@ func ReadThumbnail(remote *remoteFedora, id string, result *CurateItem) error {
 	}
 
 	result.Add("thumbnail", info.Location)
+
+	return nil
+}
+
+func ReadBendoItem(remote *remoteFedora, id string, result *CurateItem) error {
+	body, err := remote.GetDatastream(id, "bendo-item")
+	if err != nil {
+		return err
+	}
+	v, err := ioutil.ReadAll(body)
+	body.Close()
+	if err != nil {
+		return err
+	}
+
+	result.Add("bendo-item", string(v))
 
 	return nil
 }
