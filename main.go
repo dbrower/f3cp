@@ -280,10 +280,10 @@ func DownloadCurateObjects(remote *remoteFedora, ids []string) error {
 	w.Comma = '\t'
 
 	for _, id := range ids {
-		fmt.Fprintln(os.Stderr, "Fetching", id)
+		fmt.Fprintf(os.Stderr, ".")
 		v, err := FetchOneCurateObject(remote, id)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, id, err)
+			fmt.Fprintln(os.Stderr, "\n", id, err)
 		}
 
 		for _, t := range v.Meta {
