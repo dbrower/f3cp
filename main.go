@@ -32,6 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "dump":
 		DumpList(remote, os.Stdout, os.Args[3:])
+	case "search":
+		DumpSearch(remote, os.Args[3])
 	case "load":
 		LoadList(remote, os.Stdin)
 	default:
@@ -50,6 +52,10 @@ all current datastream contents.
 
 Copy the JSON provided on STDIN into the given fedora, possibly overwriting
 any existing objects.
+
+	f3cp search <remote fedora> <pattern>
+
+Searches fedora for the given pattern and dumps all matching objects to STDOUT.
 
 You should include a username and password if your instance of fedora requires
 it. e.g. https://username:password@host/fedora
@@ -125,6 +131,35 @@ func FetchOneObject(remote *remoteFedora, id string) (*FObject, error) {
 		result.DSitems = append(result.DSitems, entry)
 	}
 	return &result, nil
+}
+
+// DumpSearch uses a pattern and downloads every object that matches the pattern.
+// Useful patterns are `pid~something*` to match all PIDs that have a given prefix,
+// and `pid~prefix:* mDate>2020-11-25T06:01:15` to get all items matching a prefix and
+// having a modified date later than November 25, 2020 at 6:01:15. The pattern is passed
+// to fedora 3 unchanged, so refer to the fedora documentation for more.
+func DumpSearch(remote *remoteFedora, pattern string) {
+	// we first build a complete list, and then use DumpList().
+	var pids []string
+	token := ""
+
+	var err error
+	for {
+		// get a page of search results
+		var ids []string
+		ids, token, err = remote.SearchObjects(pattern, token)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			continue
+		}
+		pids = append(pids, ids...)
+		// no token is returned on the last results page
+		if token == "" {
+			break
+		}
+	}
+	fmt.Fprintf(os.Stderr, "%d Items Found\n", len(pids))
+	DumpList(remote, os.Stdout, pids)
 }
 
 func LoadList(remote *remoteFedora, source io.Reader) error {
