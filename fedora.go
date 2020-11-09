@@ -228,6 +228,29 @@ func (rf *remoteFedora) UpdateDatastream(id string, info DsInfo, content io.Read
 	return rf.updateDS(id, info, content, "PUT")
 }
 
+type objectSearch struct {
+	Token string   `xml:"listSession>token"`
+	IDs   []string `xml:"resultList>objectFields>pid"`
+}
+
+func (rf *remoteFedora) SearchObjects(query string, token string) ([]string, string, error) {
+	var results objectSearch
+	params := url.Values{}
+	params.Add("query", query)
+	params.Add("pid", "true")
+	params.Add("maxResults", "100")
+	params.Add("resultFormat", "xml")
+	if token != "" {
+		params.Add("sessionToken", token)
+	}
+	path := rf.hostpath + "objects?" + params.Encode()
+	err := rf.getXML(path, &results)
+	if err != nil {
+		return []string{}, token, err
+	}
+	return results.IDs, results.Token, err
+}
+
 // NewTestFedora creates an empty TestFedora object.
 func NewTestFedora() *TestFedora {
 	return &TestFedora{data: make(map[string]dsPair)}
