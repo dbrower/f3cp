@@ -55,7 +55,9 @@ any existing objects.
 
 	f3cp search <remote fedora> <pattern>
 
-Searches fedora for the given pattern and dumps all matching objects to STDOUT.
+Searches fedora for the given pattern and prints the IDs of all matching
+objects to STDOUT, with one ID per line. Perfect for feeding to f3cp dump!.
+
 
 You should include a username and password if your instance of fedora requires
 it. e.g. https://username:password@host/fedora
@@ -133,14 +135,13 @@ func FetchOneObject(remote *remoteFedora, id string) (*FObject, error) {
 	return &result, nil
 }
 
-// DumpSearch uses a pattern and downloads every object that matches the pattern.
-// Useful patterns are `pid~something*` to match all PIDs that have a given prefix,
-// and `pid~prefix:* mDate>2020-11-25T06:01:15` to get all items matching a prefix and
-// having a modified date later than November 25, 2020 at 6:01:15. The pattern is passed
-// to fedora 3 unchanged, so refer to the fedora documentation for more.
+// DumpSearch uses a pattern prints evert matching PID, one PID per line.
+// Useful patterns are `pid~something*` to match all PIDs that have a given
+// prefix, and `pid~prefix:* mDate>2020-11-25T06:01:15` to get all items
+// matching a prefix and having a modified date later than November 25, 2020 at
+// 6:01:15. The pattern is passed to fedora 3 unchanged, so refer to the fedora
+// documentation for more possibilities.
 func DumpSearch(remote *remoteFedora, pattern string) {
-	// we first build a complete list, and then use DumpList().
-	var pids []string
 	token := ""
 
 	var err error
@@ -152,14 +153,15 @@ func DumpSearch(remote *remoteFedora, pattern string) {
 			fmt.Fprintln(os.Stderr, err)
 			continue
 		}
-		pids = append(pids, ids...)
+		for _, id := range ids {
+			fmt.Fprintln(os.Stdout, id)
+		}
 		// no token is returned on the last results page
 		if token == "" {
 			break
 		}
 	}
 	fmt.Fprintf(os.Stderr, "%d Items Found\n", len(pids))
-	DumpList(remote, os.Stdout, pids)
 }
 
 func LoadList(remote *remoteFedora, source io.Reader) error {
