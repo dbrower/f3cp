@@ -115,7 +115,8 @@ func FetchOneObject(remote *remoteFedora, id string) (*FObject, error) {
 		if err != nil {
 			return nil, err
 		}
-		if entry.Size > 0 {
+		// Fedora uses size == -1 to mean unknown datastream size.
+		if entry.Size != 0 {
 			body, err := remote.GetDatastream(id, ds)
 			if err != nil {
 				return nil, err
