@@ -136,7 +136,7 @@ func FetchOneObject(remote *remoteFedora, id string) (*FObject, error) {
 	return &result, nil
 }
 
-// DumpSearch uses a pattern prints evert matching PID, one PID per line.
+// DumpSearch uses a pattern prints every matching PID, one PID per line.
 // Useful patterns are `pid~something*` to match all PIDs that have a given
 // prefix, and `pid~prefix:* mDate>2020-11-25T06:01:15` to get all items
 // matching a prefix and having a modified date later than November 25, 2020 at
@@ -144,6 +144,7 @@ func FetchOneObject(remote *remoteFedora, id string) (*FObject, error) {
 // documentation for more possibilities.
 func DumpSearch(remote *remoteFedora, pattern string) {
 	token := ""
+	pidcount := 0
 
 	var err error
 	for {
@@ -157,12 +158,13 @@ func DumpSearch(remote *remoteFedora, pattern string) {
 		for _, id := range ids {
 			fmt.Fprintln(os.Stdout, id)
 		}
+		pidcount += len(ids)
 		// no token is returned on the last results page
 		if token == "" {
 			break
 		}
 	}
-	fmt.Fprintf(os.Stderr, "%d Items Found\n", len(pids))
+	fmt.Fprintf(os.Stderr, "%d Items Found\n", pidcount)
 }
 
 func LoadList(remote *remoteFedora, source io.Reader) error {
